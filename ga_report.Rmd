@@ -1,0 +1,285 @@
+---
+title: "Google Analytics report for Very Statisticious"
+author: "Ariel Muldoon"
+date: "`r Sys.Date()`"
+output: pdf_document
+params:
+     startdate: "2020-06-05"
+     enddate: "2020-06-11"
+---
+
+```{r setup, include = FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(googleAnalyticsR)
+library(dplyr) # data manip
+library(tidyr) # joins
+library(ggplot2) # plotting
+library(sf) # plotting maps
+library(forcats) # factors
+
+# Authorization
+ga_auth(email = "ariel.muldoon@gmail.com")
+```
+
+I started tracking my blog Very Statisticious, aosmith.rbind.io, with Google Analytics on 2020-06-04.  Now I can track users and page views and look at how many and where folks are using the blog.
+
+## Google analytics data
+
+Pull Google Analytics data from web and analyze key metrics of interest.  Dates can be changed using the parameters.
+
+I'm collecting number of unique page views, users and sessions by country, and users and sessions by state/city (US). For location data I remove users without data.
+
+```{r data, echo = FALSE, message = FALSE, warning = FALSE}
+vs_id = 220230987
+pageviews = google_analytics(vs_id,
+                             date_range = c(params$startdate, params$enddate),
+                             metrics = "uniquePageViews",
+                             dimensions = "pagePath")
+
+# Country
+# Remove those without location info
+country = google_analytics(vs_id,
+                           date_range = c(params$startdate, params$enddate),
+                           metrics = c("users", "sessions"),
+                           dimensions = "country") %>%
+     filter(country != "(not set)")
+
+# US States
+# Remove those without location info
+us_states = google_analytics(vs_id,
+                             date_range = c(params$startdate, params$enddate),
+                             metrics = c("users", "sessions"),
+                             dimensions = c("country", "region"),
+                             dim_filters = filter_clause_ga4(list(dim_filter("country", "EXACT", "United States", not = FALSE) ) ) ) %>%
+     filter(region != "(not set)")
+
+# US cities
+# Remove those without location info
+us_cities = google_analytics(vs_id,
+                             date_range = c(params$startdate, params$enddate),
+                             metrics = c("users", "sessions"),
+                             dimensions = c("country", "region", "city"),
+                             dim_filters = filter_clause_ga4(list(dim_filter("country", "EXACT", "United States", not = FALSE) ) ),
+                             max = -1) %>%
+     filter(country != "(not set)")
+
+```
+
+## Data cleaning
+
+Clicks from facebook, in particular, changes the page ID.  These need to be cleaned.  In addition, I want to add "tag" info for pages that involve **ggplot2**, **emmeans**, or **simulations**.
+
+```{r clean, echo = FALSE, warning = FALSE, message = FALSE}
+cleanpage = pageviews %>%
+     mutate(pagePath = gsub("\\?.*", "", pagePath) ) %>%
+     group_by(pagePath) %>%
+     summarise(uniquePageViews = sum(uniquePageViews) ) %>%
+     filter(pagePath != "/", !grepl("tags|page", pagePath) )
+
+
+# Create look-up table with page and tag 
+     # (ggplot2, simulation, emmeans only, any more "other")
+tag = tribble(~pagePath, ~tag,
+              "/2018/01/09/simulate-simulate-part1/", "simulation",
+              "/2018/01/09/simulate-simulate-part2/", "simulation",
+              "/2018/01/19/reversing-the-order-of-a-ggplot2-legend/", "ggplot2",
+              "/2018/04/23/simulate-simulate-part-2/", "simulation",
+              "/2018/06/05/a-closer-look-at-replicate-and-purrr/", "simulation",
+              "/2018/07/18/simulate-poisson-edition/", "simulation",
+              "/2018/07/19/manual-legends-ggplot2/", "ggplot2",
+              "/2018/08/20/automating-exploratory-plots/", "ggplot2",
+              "/2018/08/29/getting-started-simulating-data/", "simulation",
+              "/2018/11/16/plot-fitted-lines/", "ggplot2",
+              "/2019/03/25/getting-started-with-emmeans/", "emmeans",
+              "/2019/04/15/custom-contrasts-emmeans/", "emmeans",
+              "/2019/04/22/embedding-subplots/", "ggplot2",
+              "/2019/05/13/small-multiples-plot/", "ggplot2",
+              "/2019/10/14/background-color_gradient/", "ggplot2"
+)
+
+# Add tag info to pagepath
+     # Make any without tag "other"
+pagetag = left_join(cleanpage, tag, by = "pagePath") %>%
+     mutate(tag = fct_explicit_na(tag, na_level = "other") ) %>%
+     rename(views = uniquePageViews)
+```
+
+Here's the cleaned table.
+
+```{r cleantab}
+knitr::kable(pagetag)
+```
+
+## Page visit stats
+
+Here are page visit stats for `r params$startdate` through `r params$enddate`.
+
+### Proportion of times the page was visited.
+
+```{r proppage, echo = FALSE}
+pagetag %>%
+     arrange( desc(views) ) %>%
+     mutate(prop = views/sum(views) ) %>%
+     knitr::kable()
+```
+
+### Proportion of time each tag visited.
+
+```{r proptag, echo = FALSE}
+pagetag %>%
+     group_by(tag) %>%
+     summarise(total = sum(views) ) %>%
+     arrange( desc(total) ) %>%
+     mutate(prop = total/sum(total) ) %>%
+     knitr::kable()
+```
+
+### Weighted proportions for tags, since some tags have more posts than others.
+
+```{r proptag2, echo = FALSE}
+pagetag %>%
+     group_by(tag) %>%
+     summarise(total = sum(views),
+               n = n() ) %>%
+     arrange( desc(total) ) %>%
+     mutate(prop = (total/n)/(sum(total/n) ) ) %>%
+     knitr::kable()
+```
+
+## Plot of use across world
+
+```{r world, echo = FALSE, fig.height = 6, fig.width = 10}
+# World map
+world_sf = st_as_sf(rworldmap::getMap(resolution = "low"))
+
+# This world map uses some diff country names
+     # than what I have
+# I believe Svalbard & Jan Mayen is a part of Norway
+# Other than that world = ga_country 
+     # United States of America = United States,
+     # Republic of Serbia = Serbia,
+     # Czech Republic = Czechia
+     # Myanmar = Myanmar (Burma)
+     # United Republic of Tanzania = Tanzania
+
+country = country %>%
+     mutate(ADMIN = case_when(country == "United States" ~ "United States of America",
+                           country == "Serbia" ~ "Republic of Serbia",
+                           country == "Myanmar (Burma)" ~ "Myanmar",
+                           country == "Czechia" ~ "Czech Republic",
+                           country == "Tanzania" ~ "United Republic of Tanzania",
+                           country == "Svalbard & Jan Mayen" ~ "Norway",
+                           TRUE ~ country) ) %>%
+     group_by(ADMIN) %>%
+     summarise(across(.cols = users:sessions, sum) )
+
+# Add in user info to world map data
+world_users = left_join(world_sf, country)
+
+# Try Robinson projection based on Wilke gist
+     # https://gist.github.com/clauswilke/783e1a8ee3233775c9c3b8bfe531e28a
+crs_robin = "+proj=robin +lat_0=0 +lon_0=0 +x0=0 +y0=0"
+# projection outline in long-lat coordinates
+lats = c(90:-90, -90:90, 90)
+longs = c(rep(c(180, -180), each = 181), 180)
+robin_outline = 
+     list(cbind(longs, lats)) %>%
+     st_polygon() %>%
+     st_sfc(
+          crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
+     ) %>% 
+     st_transform(crs = crs_robin)
+# bounding box in transformed coordinates
+xlim = c(-18494733, 18613795)
+ylim = c(-9473396, 9188587)
+robin_bbox = 
+     list(
+          cbind(
+               c(xlim[1], xlim[2], xlim[2], xlim[1], xlim[1]), 
+               c(ylim[1], ylim[1], ylim[2], ylim[2], ylim[1])
+          )
+     ) %>%
+     st_polygon() %>%
+     st_sfc(crs = crs_robin)
+# area outside the earth outline
+robin_without = st_difference(robin_bbox, robin_outline)
+
+# Different breaks if 7 days or 30 days
+     # (best guess for now)
+if(diff(c(as.Date(params$startdate), as.Date(params$enddata))) > 7) {
+     leg_breaks = c(10, 100, 1000, 10000) 
+     } else {
+     leg_breaks = c(10, 100, 500)
+     }
+# Sequential color scheme example: https://wilkelab.org/practicalgg/articles/Texas_income.html
+world_plot = ggplot() + 
+     geom_sf(data = robin_without, fill = "white", color = NA) +
+     geom_sf(data = robin_outline, fill = NA, color = "black", size = 0.5/.pt) +
+     geom_sf(data = world_users,
+             aes(fill = users), color = NA) +
+     geom_sf(data = world_users, fill = NA, color = "black", size = 0.5/.pt) +
+     scale_x_continuous(name = NULL, breaks = seq(-120, 120, by = 60)) +
+     scale_y_continuous(name = NULL, breaks = seq(-60, 60, by = 30)) +
+     coord_sf(xlim = 0.95*xlim, ylim = 0.95*ylim, expand = FALSE, crs = crs_robin, ndiscr = 1000) +
+     cowplot::theme_minimal_grid() + 
+     colorspace::scale_fill_continuous_sequential(
+          palette = "Blues", rev = TRUE,
+          na.value = "grey60", trans = "log10",
+          breaks = leg_breaks,
+          name = NULL,
+          guide = guide_colorbar(frame.colour = "black",
+                                 barwidth = 10,
+                                 label.vjust = 2.5) # weirdly, moves labels closer to bar
+     ) +
+     theme(legend.direction = "horizontal",
+           legend.position = c(.4, .2),
+           plot.title = element_text(hjust = 0.5),
+           plot.caption = element_text(face = "italic") ) +
+     labs(title = paste("Number user visits", params$startdate, "thru", params$enddate),
+          caption = "Countries with no visits in gray")
+world_plot
+
+ggsave(filename = here::here("plots", paste(params$enddate, "country_visits.png", sep = "_") ),
+       plot = world_plot,
+       width = 10,
+       height = 6)
+```
+
+## Plot of use in United States
+
+```{r us, echo = FALSE, fig.height = 6, fig.width = 10}
+# US map
+# Using urbnmapr, from GitHub, https://urbaninstitute.github.io/urbnmapr/
+states_sf = urbnmapr::get_urbn_map("states", sf = TRUE)
+
+# Add in user info to us map data
+state_users = left_join(states_sf, us_states, by = c("state_name" = "region"))
+
+# Not adjusting for population
+state_plot = ggplot(data = state_users) + 
+     geom_sf(aes(fill = users), color = "black", size = 0.5/.pt) +
+     cowplot::theme_minimal_grid() + 
+     colorspace::scale_fill_continuous_sequential(
+          palette = "Blues", rev = TRUE,
+          na.value = "grey60",
+          breaks = c(10, 50, 100, 1000),
+          name = NULL, trans = "sqrt",
+          guide = guide_colorbar(frame.colour = "black",
+                                 barwidth = 7.5,
+                                 label.vjust = 2.5) # weirdly, moves labels closer to bar
+     ) +
+     theme(legend.direction = "horizontal",
+           legend.position = c(.6, .05),
+           plot.title = element_text(hjust = 0.5),
+           plot.caption = element_text(face = "italic") ) +
+     labs(title = paste("Number user visits", params$startdate, "thru", params$enddate),
+          caption = "States with no visits in gray")
+state_plot
+
+ggsave(filename = here::here("plots", paste(params$enddate, "state_visits.png", sep = "_") ),
+       plot = state_plot,
+       width = 10,
+       height = 6)
+```
+

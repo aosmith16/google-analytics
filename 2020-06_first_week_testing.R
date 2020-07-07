@@ -262,3 +262,37 @@ pagetag %>%
                n = n() ) %>%
      arrange( desc(total) ) %>%
      mutate(prop = (total/n)/(sum(total/n) ) )
+
+
+
+# For world plotting, can likely
+     # take an easier route than the code from
+     # the gist above since robinson proj is 'ESRI:54030'
+     # However, not sure on how to put in the black outline
+     # so not pursuing further for now (2020-07-07)
+ggplot() + 
+     # geom_sf(data = robin_without, fill = "white", color = NA) +
+     # geom_sf(data = robin_outline, fill = NA, color = "black", size = 0.5/.pt) +
+     geom_sf(data = world_users,
+             aes(fill = users), color = NA) +
+     geom_sf(data = world_users, fill = NA, color = "black", size = 0.5/.pt) +
+     # coord_sf(crs = st_crs('ESRI:54030') ) +
+     scale_x_continuous(name = NULL, breaks = seq(-120, 120, by = 60)) +
+     scale_y_continuous(name = NULL, breaks = seq(-60, 60, by = 30)) +
+     coord_sf(xlim = 0.95*xlim, ylim = 0.95*ylim, expand = FALSE, crs = st_crs('ESRI:54030'), ndiscr = 1000) +
+     cowplot::theme_minimal_grid() + 
+     colorspace::scale_fill_continuous_sequential(
+          palette = "Blues", rev = TRUE,
+          na.value = "grey60", trans = "log10",
+          breaks = leg_breaks,
+          name = NULL,
+          guide = guide_colorbar(frame.colour = "black",
+                                 barwidth = 10,
+                                 label.vjust = 2.5) # weirdly, moves labels closer to bar
+     ) +
+     theme(legend.direction = "horizontal",
+           legend.position = c(.4, .2),
+           plot.title = element_text(hjust = 0.5),
+           plot.caption = element_text(face = "italic") ) +
+     labs(title = paste("Number user visits", start, "thru", end),
+          caption = "Countries with no visits in gray")
